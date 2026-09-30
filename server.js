@@ -7,6 +7,8 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+// Serve static from root (Vercel) and public (local)
+app.use(express.static(__dirname));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ========== HELPER: Scrape YouTube Search ==========
@@ -270,7 +272,9 @@ app.get('/api/suggestions', async (req, res) => {
 
 // SPA fallback
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  const indexPath = path.join(__dirname, 'index.html');
+  const publicIndex = path.join(__dirname, 'public', 'index.html');
+  res.sendFile(require('fs').existsSync(indexPath) ? indexPath : publicIndex);
 });
 
 module.exports = app;
