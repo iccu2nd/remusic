@@ -1,17 +1,15 @@
 {
   "name": "remusic",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ReMusic - Modern YouTube Music Web Player with Glass UI, Synced Lyrics & Bottom Navigation",
   "private": true,
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js",
-    "build": "echo 'Static build ready'"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.2",
-    "cors": "^2.8.5",
-    "youtube-sr": "^4.3.11"
+    "cors": "^2.8.5"
   },
   "engines": {
     "node": ">=18"
