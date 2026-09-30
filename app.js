@@ -1,51 +1,42 @@
-let player = null;
-let currentTrack = null;
-let queue = [];
-let currentIndex = -1;
-let syncedLyrics = [];
-let isPlaying = false;
-let progressTimer = null;
-let shuffle = false;
-let repeat = false;
-let isModalOpen = false;
+let player = null, currentTrack = null, queue = [], currentIndex = -1;
+let syncedLyrics = [], isPlaying = false, progressTimer = null;
+let shuffle = false, repeat = false, isModalOpen = false;
 
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('ytPlayer', {
     height: '0', width: '0',
     playerVars: { autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1 },
     events: {
-      onReady: () => {},
-      onStateChange: onPlayerStateChange,
+      onStateChange: e => {
+        if (e.data === YT.PlayerState.PLAYING) { isPlaying = true; updatePlayBtns(); startProgress(); }
+        else if (e.data === YT.PlayerState.PAUSED) { isPlaying = false; updatePlayBtns(); stopProgress(); }
+        else if (e.data === YT.PlayerState.ENDED) {
+          isPlaying = false; updatePlayBtns(); stopProgress();
+          if (repeat === 'one') { player.seekTo(0); player.playVideo(); } else playNext();
+        }
+      },
       onError: () => playNext()
     }
   });
 }
 
-function onPlayerStateChange(e) {
-  if (e.data === YT.PlayerState.PLAYING) {
-    isPlaying = true; updatePlayBtns(); startProgress();
-  } else if (e.data === YT.PlayerState.PAUSED) {
-    isPlaying = false; updatePlayBtns(); stopProgress();
-  } else if (e.data === YT.PlayerState.ENDED) {
-    isPlaying = false; updatePlayBtns(); stopProgress();
-    if (repeat === 'one') { player.seekTo(0); player.playVideo(); }
-    else playNext();
-  }
-}
-
 function updatePlayBtns() {
-  const icon = isPlaying ? 'fa-pause' : 'fa-play';
-  document.querySelector('#playPauseBtn i').className = 'fa-solid ' + icon;
-  document.querySelector('#miniPlayBtn i').className = 'fa-solid ' + icon;
+  const ic = isPlaying ? 'fa-pause' : 'fa-play';
+  document.querySelector('#playPauseBtn i').className = 'fa-solid ' + ic;
+  document.querySelector('#miniPlayBtn i').className = 'fa-solid ' + ic;
 }
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
+// Greeting
+(function () {
+  const h = new Date().getHours();
+  $('#greeting').textContent = h < 11 ? 'Selamat Pagi' : h < 15 ? 'Selamat Siang' : h < 19 ? 'Selamat Sore' : 'Selamat Malam';
+})();
+
 // Nav
-$$('.nav-item').forEach(btn => {
-  btn.addEventListener('click', () => switchView(btn.dataset.view));
-});
+$$('.nav-item').forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
 
 function switchView(view) {
   $$('.nav-item').forEach(b => b.classList.remove('active'));
@@ -56,6 +47,15 @@ function switchView(view) {
   if (ve) ve.classList.add('active');
   if (isModalOpen) closeModal();
 }
+
+// Mood chips
+$$('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    $$('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    loadHome(chip.dataset.q);
+  });
+});
 
 // Search
 let searchTO = null;
@@ -91,7 +91,6 @@ $('#clearSearch').addEventListener('click', () => {
   searchInput.value = '';
   $('#clearSearch').hidden = true;
   $('#suggestions').classList.remove('show');
-  searchInput.focus();
 });
 
 searchInput.addEventListener('keydown', e => {
@@ -106,57 +105,93 @@ async function doSearch() {
   const q = searchInput.value.trim();
   if (!q) return;
   switchView('search');
-  $('#searchResults').innerHTML = skel(6);
+  $('#searchResults').innerHTML = '<div class="empty">Mencari...</div>';
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
-    renderGrid(data.results || [], $('#searchResults'));
+    renderList(data.results || [], $('#searchResults'));
   } catch {
     $('#searchResults').innerHTML = '<div class="empty">Gagal mencari</div>';
   }
 }
 
-async function loadRecommended() {
-  $('#recommendedGrid').innerHTML = skel(6);
+// Home rows
+async function loadHome(query) {
+  const q = query || 'trending music';
+  const sk = Array(5).fill('<div class="skel"></div>').join('');
+  $('#quickPicks').innerHTML = sk;
+  $('#trendingRow').innerHTML = sk;
+  $('#popularRow').innerHTML = sk;
+
   try {
-    const res = await fetch('/api/recommended');
-    const data = await res.json();
-    renderGrid(data.results || [], $('#recommendedGrid'));
+    const [r1, r2, r3] = await Promise.all([
+      fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json()),
+      fetch(`/api/search?q=${encodeURIComponent(q + ' hits')}`).then(r => r.json()),
+      fetch('/api/recommended').then(r => r.json())
+    ]);
+    renderHScroll(r1.results || [], $('#quickPicks'));
+    renderHScroll(r2.results || [], $('#trendingRow'));
+    renderHScroll(r3.results || [], $('#popularRow'));
   } catch {
-    $('#recommendedGrid').innerHTML = '<div class="empty">Gagal memuat</div>';
+    ['quickPicks', 'trendingRow', 'popularRow'].forEach(id => {
+      $('#' + id).innerHTML = '<div class="empty">Gagal memuat</div>';
+    });
   }
 }
 
-$('#refreshBtn').addEventListener('click', loadRecommended);
+$('#refreshBtn').addEventListener('click', () => {
+  const active = $('.chip.active');
+  loadHome(active ? active.dataset.q : 'trending music');
+});
 
-function skel(n) {
-  return Array(n).fill('<div class="skeleton"></div>').join('');
-}
-
-function renderGrid(items, container) {
+function renderHScroll(items, container) {
   if (!items.length) {
     container.innerHTML = '<div class="empty">Tidak ada hasil</div>';
     return;
   }
-  container.innerHTML = items.map(item => `
-    <div class="card" data-id="${item.id}" data-title="${esc(item.title)}" data-artist="${esc(item.artist)}" data-thumb="${item.thumbnail}" data-dur="${item.durationSec || 0}">
+  container.innerHTML = items.slice(0, 12).map(item => `
+    <div class="h-card" data-id="${item.id}" data-title="${esc(item.title)}" data-artist="${esc(item.artist)}" data-thumb="${item.thumbnail}" data-dur="${item.durationSec || 0}">
       <img src="${item.thumbnail}" alt="" loading="lazy" onerror="this.src='https://i.ytimg.com/vi/${item.id}/hqdefault.jpg'" />
-      ${item.duration ? `<span class="dur">${item.duration}</span>` : ''}
       <div class="title">${esc(item.title)}</div>
       <div class="artist">${esc(item.artist)}</div>
     </div>
   `).join('');
 
-  container.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', () => {
-      playTrack({
-        id: card.dataset.id,
-        title: card.dataset.title,
-        artist: card.dataset.artist,
-        thumbnail: card.dataset.thumb,
-        durationSec: Number(card.dataset.dur) || 0
-      });
-    });
+  container.querySelectorAll('.h-card').forEach(card => {
+    card.addEventListener('click', () => playTrack({
+      id: card.dataset.id,
+      title: card.dataset.title,
+      artist: card.dataset.artist,
+      thumbnail: card.dataset.thumb,
+      durationSec: Number(card.dataset.dur) || 0
+    }));
+  });
+}
+
+function renderList(items, container) {
+  if (!items.length) {
+    container.innerHTML = '<div class="empty">Tidak ada hasil</div>';
+    return;
+  }
+  container.innerHTML = items.map((item, i) => `
+    <div class="v-item" data-id="${item.id}" data-title="${esc(item.title)}" data-artist="${esc(item.artist)}" data-thumb="${item.thumbnail}" data-dur="${item.durationSec || 0}">
+      <span class="num">${i + 1}</span>
+      <img src="${item.thumbnail}" alt="" loading="lazy" />
+      <div class="info">
+        <div class="title">${esc(item.title)}</div>
+        <div class="artist">${esc(item.artist)}</div>
+      </div>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.v-item').forEach(el => {
+    el.addEventListener('click', () => playTrack({
+      id: el.dataset.id,
+      title: el.dataset.title,
+      artist: el.dataset.artist,
+      thumbnail: el.dataset.thumb,
+      durationSec: Number(el.dataset.dur) || 0
+    }));
   });
 }
 
@@ -169,12 +204,10 @@ function esc(s) {
 function playTrack(track, fromQueue) {
   currentTrack = track;
   updateNowPlaying(track);
-
   if (player && player.loadVideoById) {
     player.loadVideoById(track.id);
     setTimeout(() => { try { player.playVideo(); } catch {} }, 200);
   }
-
   loadLyrics(track.title, track.artist, track.durationSec);
   if (!fromQueue) loadRelated(track.id);
 }
@@ -184,11 +217,9 @@ function updateNowPlaying(track) {
   $('#miniTitle').textContent = track.title || '—';
   $('#miniArtist').textContent = track.artist || '—';
   $('#miniPlayer').hidden = false;
-
   $('#fullThumb').src = track.thumbnail || '';
   $('#fullTitle').textContent = track.title || '—';
   $('#fullArtist').textContent = track.artist || '—';
-
   $('#lyricsThumb').src = track.thumbnail || '';
   $('#lyricsTitle').textContent = track.title || '—';
   $('#lyricsArtist').textContent = track.artist || '—';
@@ -201,10 +232,7 @@ async function loadRelated(videoId) {
     queue = data.results || [];
     currentIndex = -1;
     renderQueue();
-  } catch {
-    queue = [];
-    renderQueue();
-  }
+  } catch { queue = []; renderQueue(); }
 }
 
 function renderQueue() {
@@ -214,17 +242,16 @@ function renderQueue() {
     return;
   }
   $('#queueList').innerHTML = queue.map((item, i) => `
-    <div class="queue-item ${currentTrack && currentTrack.id === item.id ? 'active' : ''}" data-i="${i}">
-      <span class="q-num">${i + 1}</span>
+    <div class="v-item ${currentTrack && currentTrack.id === item.id ? 'active' : ''}" data-i="${i}">
+      <span class="num">${i + 1}</span>
       <img src="${item.thumbnail}" alt="" />
-      <div class="q-info">
-        <div class="q-title">${esc(item.title)}</div>
-        <div class="q-artist">${esc(item.artist)}</div>
+      <div class="info">
+        <div class="title">${esc(item.title)}</div>
+        <div class="artist">${esc(item.artist)}</div>
       </div>
     </div>
   `).join('');
-
-  $$('#queueList .queue-item').forEach(el => {
+  $$('#queueList .v-item').forEach(el => {
     el.addEventListener('click', () => {
       currentIndex = Number(el.dataset.i);
       playTrack(queue[currentIndex], true);
@@ -235,6 +262,7 @@ function renderQueue() {
 async function loadLyrics(title, artist, dur) {
   $('#lyricsContainer').innerHTML = '<div class="empty">Memuat lirik...</div>';
   syncedLyrics = [];
+  lyricsOffset = 0;
   try {
     let url = `/api/lyrics?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || '')}`;
     if (dur > 10) url += `&duration=${Math.round(dur)}`;
@@ -242,12 +270,15 @@ async function loadLyrics(title, artist, dur) {
     if (!res.ok) throw 0;
     const data = await res.json();
     if (data.instrumental) {
-      $('#lyricsContainer').innerHTML = '<div class="empty">Instrumen (tanpa lirik)</div>';
+      $('#lyricsContainer').innerHTML = '<div class="empty">Instrumen</div>';
       return;
     }
     if (data.syncedLyrics) {
       syncedLyrics = parseLRC(data.syncedLyrics);
       if (syncedLyrics.length) {
+        // Auto-offset: if first lyric starts very late, keep natural; otherwise slight early bias for vocals
+        if (syncedLyrics[0].time > 8) lyricsOffset = 0;
+        else lyricsOffset = -0.15; // slight early so line appears with vocal onset
         $('#lyricsContainer').innerHTML = syncedLyrics.map((l, i) =>
           `<div class="lyrics-line" data-i="${i}">${esc(l.text)}</div>`
         ).join('');
@@ -270,17 +301,35 @@ function parseLRC(lrc) {
   const re = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\](.*)/g;
   let m;
   while ((m = re.exec(lrc)) !== null) {
-    const t = parseInt(m[1]) * 60 + parseInt(m[2]) + (m[3] ? parseInt(m[3].padEnd(3, '0')) / 1000 : 0);
+    const ms = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) / 1000 : 0;
+    const t = parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + ms;
     const text = (m[4] || '').trim();
     if (text) lines.push({ time: t, text });
   }
-  return lines.sort((a, b) => a.time - b.time);
+  // Merge duplicate timestamps, keep order
+  lines.sort((a, b) => a.time - b.time);
+  const out = [];
+  for (const line of lines) {
+    if (out.length && Math.abs(out[out.length - 1].time - line.time) < 0.05) {
+      out[out.length - 1].text += ' ' + line.text;
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
 }
+
+let lyricsOffset = 0;
+let lastActiveLyric = -1;
+let rafId = null;
 
 function startProgress() {
   stopProgress();
-  progressTimer = setInterval(() => {
-    if (!player || typeof player.getCurrentTime !== 'function') return;
+  const tick = () => {
+    if (!player || typeof player.getCurrentTime !== 'function') {
+      rafId = requestAnimationFrame(tick);
+      return;
+    }
     try {
       const cur = player.getCurrentTime() || 0;
       const dur = player.getDuration() || 0;
@@ -291,27 +340,65 @@ function startProgress() {
       }
       syncLyrics(cur);
     } catch {}
-  }, 250);
+    if (isPlaying) rafId = requestAnimationFrame(tick);
+  };
+  rafId = requestAnimationFrame(tick);
+  // Also keep a light interval as backup when tab is throttled
+  progressTimer = setInterval(() => {
+    if (!isPlaying || !player) return;
+    try {
+      const cur = player.getCurrentTime() || 0;
+      const dur = player.getDuration() || 0;
+      if (dur > 0) {
+        $('#progressBar').value = Math.floor((cur / dur) * 1000);
+        $('#currentTime').textContent = fmt(cur);
+        $('#duration').textContent = fmt(dur);
+      }
+      syncLyrics(cur);
+    } catch {}
+  }, 120);
 }
 
 function stopProgress() {
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 }
 
 function syncLyrics(t) {
   if (!syncedLyrics.length) return;
-  let active = -1;
-  for (let i = 0; i < syncedLyrics.length; i++) {
-    if (t >= syncedLyrics[i].time) active = i; else break;
+  const time = t + lyricsOffset;
+
+  // Binary search for the active line: last line where time >= line.time
+  let lo = 0, hi = syncedLyrics.length - 1, active = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (syncedLyrics[mid].time <= time) {
+      active = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
+
+  // If next line is very close (< 0.12s), prefer switching early for vocal feel
+  if (active >= 0 && active < syncedLyrics.length - 1) {
+    const nextT = syncedLyrics[active + 1].time;
+    if (nextT - time < 0.12 && nextT - time > 0) {
+      active = active + 1;
+    }
+  }
+
+  if (active === lastActiveLyric) return;
+  lastActiveLyric = active;
+
   const lines = $('#lyricsContainer').querySelectorAll('.lyrics-line');
   lines.forEach((el, i) => {
     if (i === active) {
-      if (!el.classList.contains('active')) {
-        el.classList.add('active');
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    } else el.classList.remove('active');
+      el.classList.add('active');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      el.classList.remove('active');
+    }
   });
 }
 
@@ -327,13 +414,13 @@ function togglePlay() {
 
 $('#playPauseBtn').addEventListener('click', togglePlay);
 $('#miniPlayBtn').addEventListener('click', e => { e.stopPropagation(); togglePlay(); });
-
 $('#progressBar').addEventListener('input', e => {
   if (!player) return;
-  const dur = player.getDuration() || 0;
-  player.seekTo((e.target.value / 1000) * dur, true);
+  const t = ((e.target.value / 1000) * (player.getDuration() || 0));
+  player.seekTo(t, true);
+  lastActiveLyric = -1;
+  syncLyrics(t);
 });
-
 $('#nextBtn').addEventListener('click', playNext);
 $('#prevBtn').addEventListener('click', () => {
   if (!player) return;
@@ -352,7 +439,6 @@ $('#shuffleBtn').addEventListener('click', () => {
   shuffle = !shuffle;
   $('#shuffleBtn').classList.toggle('active', shuffle);
 });
-
 $('#repeatBtn').addEventListener('click', () => {
   if (!repeat) { repeat = 'all'; $('#repeatBtn').classList.add('active'); }
   else if (repeat === 'all') { repeat = 'one'; }
@@ -364,19 +450,11 @@ $('#miniPlayer').addEventListener('click', e => {
   if (e.target.closest('#miniPlayBtn')) return;
   openModal();
 });
-
 $('#modalBackdrop').addEventListener('click', closeModal);
 $('.modal-handle').addEventListener('click', closeModal);
 
-function openModal() {
-  $('#playerModal').classList.add('open');
-  isModalOpen = true;
-}
-
-function closeModal() {
-  $('#playerModal').classList.remove('open');
-  isModalOpen = false;
-}
+function openModal() { $('#playerModal').classList.add('open'); isModalOpen = true; }
+function closeModal() { $('#playerModal').classList.remove('open'); isModalOpen = false; }
 
 let touchY = 0;
 $('.modal-sheet').addEventListener('touchstart', e => { touchY = e.touches[0].clientY; }, { passive: true });
@@ -387,4 +465,4 @@ $('.modal-sheet').addEventListener('touchend', e => {
 $('#lyricsBtn').addEventListener('click', () => { closeModal(); switchView('lyrics'); });
 $('#queueBtn').addEventListener('click', () => { closeModal(); switchView('queue'); });
 
-loadRecommended();
+loadHome('trending music');

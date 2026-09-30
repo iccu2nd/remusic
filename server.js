@@ -207,39 +207,59 @@ app.get('/api/lyrics', async (req, res) => {
 
     if (!title) return res.status(400).json({ error: 'title required' });
 
+    const headers = { 'User-Agent': 'ReMusic/1.2 (lyrics-sync)' };
+
+    // 1) Exact get with duration (most accurate)
     const params = new URLSearchParams({ track_name: title });
     if (artist) params.append('artist_name', artist);
     if (duration && duration > 10) params.append('duration', duration);
 
-    let response = await fetch(`https://lrclib.net/api/get?${params}`, {
-      headers: { 'User-Agent': 'ReMusic/1.1' }
-    });
-
+    let response = await fetch(`https://lrclib.net/api/get?${params}`, { headers });
     if (response.ok) {
       const data = await response.json();
-      return res.json({
-        plainLyrics: data.plainLyrics || null,
-        syncedLyrics: data.syncedLyrics || null,
-        trackName: data.trackName || data.name || title,
-        artistName: data.artistName || artist,
-        instrumental: data.instrumental || false
-      });
+      if (data.syncedLyrics || data.plainLyrics) {
+        return res.json({
+          plainLyrics: data.plainLyrics || null,
+          syncedLyrics: data.syncedLyrics || null,
+          trackName: data.trackName || data.name || title,
+          artistName: data.artistName || artist,
+          instrumental: data.instrumental || false
+        });
+      }
     }
 
-    // Search fallback
+    // 2) Search and pick best by duration + has synced lyrics
     const searchQ = artist ? `${title} ${artist}` : title;
-    const searchRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(searchQ)}`, {
-      headers: { 'User-Agent': 'ReMusic/1.1' }
-    });
+    const searchRes = await fetch(
+      `https://lrclib.net/api/search?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist || '')}&q=${encodeURIComponent(searchQ)}`,
+      { headers }
+    );
 
     if (searchRes.ok) {
       const list = await searchRes.json();
-      if (Array.isArray(list) && list[0]) {
-        const best = list[0];
+      if (Array.isArray(list) && list.length) {
+        // Prefer: has syncedLyrics, closest duration, non-instrumental
+        let best = null;
+        let bestScore = -1;
+        for (const item of list) {
+          if (item.instrumental) continue;
+          let score = 0;
+          if (item.syncedLyrics) score += 100;
+          if (item.plainLyrics) score += 10;
+          if (duration && item.duration) {
+            const diff = Math.abs(item.duration - duration);
+            score += Math.max(0, 50 - diff); // closer duration = higher
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            best = item;
+          }
+        }
+        if (!best) best = list[0];
         return res.json({
           plainLyrics: best.plainLyrics || null,
           syncedLyrics: best.syncedLyrics || null,
-          trackName: best.trackName || title,
+          trackName: best.trackName || best.name || title,
           artistName: best.artistName || artist,
           instrumental: best.instrumental || false
         });
@@ -248,6 +268,7 @@ app.get('/api/lyrics', async (req, res) => {
 
     res.status(404).json({ error: 'Lyrics not found' });
   } catch (err) {
+    console.error('Lyrics error:', err.message);
     res.status(500).json({ error: 'Failed to fetch lyrics' });
   }
 });
