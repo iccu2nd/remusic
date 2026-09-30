@@ -1,41 +1,79 @@
 let player = null, currentTrack = null, queue = [], currentIndex = -1;
-let syncedLyrics = [], isPlaying = false, progressTimer = null;
+let syncedLyrics = [], isPlaying = false, progressTimer = null, rafId = null;
 let shuffle = false, repeat = false, isModalOpen = false;
+let lyricsOffset = 0, lastActiveLyric = -1;
 
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('ytPlayer', {
     height: '0', width: '0',
-    playerVars: { autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1 },
+    playerVars: {
+      autoplay: 0, controls: 0, disablekb: 1, fs: 0,
+      modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1,
+      origin: location.origin
+    },
     events: {
-      onStateChange: e => {
-        if (e.data === YT.PlayerState.PLAYING) { isPlaying = true; updatePlayBtns(); startProgress(); }
-        else if (e.data === YT.PlayerState.PAUSED) { isPlaying = false; updatePlayBtns(); stopProgress(); }
-        else if (e.data === YT.PlayerState.ENDED) {
-          isPlaying = false; updatePlayBtns(); stopProgress();
-          if (repeat === 'one') { player.seekTo(0); player.playVideo(); } else playNext();
-        }
-      },
+      onStateChange: onState,
       onError: () => playNext()
     }
   });
 }
 
+function onState(e) {
+  if (e.data === YT.PlayerState.PLAYING) {
+    isPlaying = true; updatePlayBtns(); startProgress(); updateMediaSession();
+  } else if (e.data === YT.PlayerState.PAUSED) {
+    isPlaying = false; updatePlayBtns(); stopProgress();
+  } else if (e.data === YT.PlayerState.ENDED) {
+    isPlaying = false; updatePlayBtns(); stopProgress();
+    if (repeat === 'one') { player.seekTo(0); player.playVideo(); }
+    else playNext();
+  }
+}
+
 function updatePlayBtns() {
   const ic = isPlaying ? 'fa-pause' : 'fa-play';
-  document.querySelector('#playPauseBtn i').className = 'fa-solid ' + ic;
-  document.querySelector('#miniPlayBtn i').className = 'fa-solid ' + ic;
+  const a = document.querySelector('#playPauseBtn i');
+  const b = document.querySelector('#miniPlayBtn i');
+  if (a) a.className = 'fa-solid ' + ic;
+  if (b) b.className = 'fa-solid ' + ic;
+}
+
+// Media Session — lock screen / notification controls + background feel
+function updateMediaSession() {
+  if (!('mediaSession' in navigator) || !currentTrack) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentTrack.title || 'ReMusic',
+      artist: currentTrack.artist || '',
+      album: 'ReMusic',
+      artwork: [
+        { src: currentTrack.thumbnail || '', sizes: '300x300', type: 'image/jpeg' },
+        { src: currentTrack.thumbnail || '', sizes: '512x512', type: 'image/jpeg' }
+      ]
+    });
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    navigator.mediaSession.setActionHandler('play', () => { if (player) player.playVideo(); });
+    navigator.mediaSession.setActionHandler('pause', () => { if (player) player.pauseVideo(); });
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      if (player && (player.getCurrentTime() || 0) > 3) player.seekTo(0);
+      else if (currentIndex > 0) { currentIndex--; playTrack(queue[currentIndex], true); }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => playNext());
+    navigator.mediaSession.setActionHandler('seekto', (d) => {
+      if (d.seekTime != null && player) player.seekTo(d.seekTime, true);
+    });
+  } catch {}
 }
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
-// Greeting
 (function () {
   const h = new Date().getHours();
-  $('#greeting').textContent = h < 11 ? 'Selamat Pagi' : h < 15 ? 'Selamat Siang' : h < 19 ? 'Selamat Sore' : 'Selamat Malam';
+  const g = $('#greeting');
+  if (g) g.textContent = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 19 ? 'Selamat sore' : 'Selamat malam';
 })();
 
-// Nav
 $$('.nav-item').forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
 
 function switchView(view) {
@@ -48,7 +86,6 @@ function switchView(view) {
   if (isModalOpen) closeModal();
 }
 
-// Mood chips
 $$('.chip').forEach(chip => {
   chip.addEventListener('click', () => {
     $$('.chip').forEach(c => c.classList.remove('active'));
@@ -57,7 +94,6 @@ $$('.chip').forEach(chip => {
   });
 });
 
-// Search
 let searchTO = null;
 const searchInput = $('#searchInput');
 
@@ -115,14 +151,12 @@ async function doSearch() {
   }
 }
 
-// Home rows
 async function loadHome(query) {
   const q = query || 'trending music';
   const sk = Array(5).fill('<div class="skel"></div>').join('');
   $('#quickPicks').innerHTML = sk;
   $('#trendingRow').innerHTML = sk;
   $('#popularRow').innerHTML = sk;
-
   try {
     const [r1, r2, r3] = await Promise.all([
       fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json()),
@@ -140,15 +174,12 @@ async function loadHome(query) {
 }
 
 $('#refreshBtn').addEventListener('click', () => {
-  const active = $('.chip.active');
-  loadHome(active ? active.dataset.q : 'trending music');
+  const a = $('.chip.active');
+  loadHome(a ? a.dataset.q : 'trending music');
 });
 
 function renderHScroll(items, container) {
-  if (!items.length) {
-    container.innerHTML = '<div class="empty">Tidak ada hasil</div>';
-    return;
-  }
+  if (!items.length) { container.innerHTML = '<div class="empty">Kosong</div>'; return; }
   container.innerHTML = items.slice(0, 12).map(item => `
     <div class="h-card" data-id="${item.id}" data-title="${esc(item.title)}" data-artist="${esc(item.artist)}" data-thumb="${item.thumbnail}" data-dur="${item.durationSec || 0}">
       <img src="${item.thumbnail}" alt="" loading="lazy" onerror="this.src='https://i.ytimg.com/vi/${item.id}/hqdefault.jpg'" />
@@ -156,41 +187,27 @@ function renderHScroll(items, container) {
       <div class="artist">${esc(item.artist)}</div>
     </div>
   `).join('');
-
   container.querySelectorAll('.h-card').forEach(card => {
     card.addEventListener('click', () => playTrack({
-      id: card.dataset.id,
-      title: card.dataset.title,
-      artist: card.dataset.artist,
-      thumbnail: card.dataset.thumb,
-      durationSec: Number(card.dataset.dur) || 0
+      id: card.dataset.id, title: card.dataset.title, artist: card.dataset.artist,
+      thumbnail: card.dataset.thumb, durationSec: Number(card.dataset.dur) || 0
     }));
   });
 }
 
 function renderList(items, container) {
-  if (!items.length) {
-    container.innerHTML = '<div class="empty">Tidak ada hasil</div>';
-    return;
-  }
+  if (!items.length) { container.innerHTML = '<div class="empty">Tidak ada hasil</div>'; return; }
   container.innerHTML = items.map((item, i) => `
     <div class="v-item" data-id="${item.id}" data-title="${esc(item.title)}" data-artist="${esc(item.artist)}" data-thumb="${item.thumbnail}" data-dur="${item.durationSec || 0}">
       <span class="num">${i + 1}</span>
       <img src="${item.thumbnail}" alt="" loading="lazy" />
-      <div class="info">
-        <div class="title">${esc(item.title)}</div>
-        <div class="artist">${esc(item.artist)}</div>
-      </div>
+      <div class="info"><div class="title">${esc(item.title)}</div><div class="artist">${esc(item.artist)}</div></div>
     </div>
   `).join('');
-
   container.querySelectorAll('.v-item').forEach(el => {
     el.addEventListener('click', () => playTrack({
-      id: el.dataset.id,
-      title: el.dataset.title,
-      artist: el.dataset.artist,
-      thumbnail: el.dataset.thumb,
-      durationSec: Number(el.dataset.dur) || 0
+      id: el.dataset.id, title: el.dataset.title, artist: el.dataset.artist,
+      thumbnail: el.dataset.thumb, durationSec: Number(el.dataset.dur) || 0
     }));
   });
 }
@@ -203,13 +220,15 @@ function esc(s) {
 
 function playTrack(track, fromQueue) {
   currentTrack = track;
+  lastActiveLyric = -1;
   updateNowPlaying(track);
   if (player && player.loadVideoById) {
     player.loadVideoById(track.id);
-    setTimeout(() => { try { player.playVideo(); } catch {} }, 200);
+    setTimeout(() => { try { player.playVideo(); } catch {} }, 180);
   }
-  loadLyrics(track.title, track.artist, track.durationSec);
+  loadLyrics(track);
   if (!fromQueue) loadRelated(track.id);
+  updateMediaSession();
 }
 
 function updateNowPlaying(track) {
@@ -237,18 +256,12 @@ async function loadRelated(videoId) {
 
 function renderQueue() {
   $('#queueCount').textContent = queue.length;
-  if (!queue.length) {
-    $('#queueList').innerHTML = '<div class="empty">Antrian kosong</div>';
-    return;
-  }
+  if (!queue.length) { $('#queueList').innerHTML = '<div class="empty">Antrian kosong</div>'; return; }
   $('#queueList').innerHTML = queue.map((item, i) => `
     <div class="v-item ${currentTrack && currentTrack.id === item.id ? 'active' : ''}" data-i="${i}">
       <span class="num">${i + 1}</span>
       <img src="${item.thumbnail}" alt="" />
-      <div class="info">
-        <div class="title">${esc(item.title)}</div>
-        <div class="artist">${esc(item.artist)}</div>
-      </div>
+      <div class="info"><div class="title">${esc(item.title)}</div><div class="artist">${esc(item.artist)}</div></div>
     </div>
   `).join('');
   $$('#queueList .v-item').forEach(el => {
@@ -259,26 +272,25 @@ function renderQueue() {
   });
 }
 
-async function loadLyrics(title, artist, dur) {
+async function loadLyrics(track) {
   $('#lyricsContainer').innerHTML = '<div class="empty">Memuat lirik...</div>';
   syncedLyrics = [];
-  lyricsOffset = 0;
+  lastActiveLyric = -1;
+  lyricsOffset = -0.12;
   try {
-    let url = `/api/lyrics?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || '')}`;
-    if (dur > 10) url += `&duration=${Math.round(dur)}`;
+    let url = `/api/lyrics?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist || '')}&videoId=${encodeURIComponent(track.id)}`;
+    if (track.durationSec > 10) url += `&duration=${Math.round(track.durationSec)}`;
     const res = await fetch(url);
     if (!res.ok) throw 0;
     const data = await res.json();
-    if (data.instrumental) {
-      $('#lyricsContainer').innerHTML = '<div class="empty">Instrumen</div>';
-      return;
-    }
+
+    // YouTube captions are timed to THIS video — prefer zero offset
+    if (data.source === 'youtube') lyricsOffset = 0;
+    else lyricsOffset = -0.12;
+
     if (data.syncedLyrics) {
       syncedLyrics = parseLRC(data.syncedLyrics);
       if (syncedLyrics.length) {
-        // Auto-offset: if first lyric starts very late, keep natural; otherwise slight early bias for vocals
-        if (syncedLyrics[0].time > 8) lyricsOffset = 0;
-        else lyricsOffset = -0.15; // slight early so line appears with vocal onset
         $('#lyricsContainer').innerHTML = syncedLyrics.map((l, i) =>
           `<div class="lyrics-line" data-i="${i}">${esc(l.text)}</div>`
         ).join('');
@@ -306,28 +318,21 @@ function parseLRC(lrc) {
     const text = (m[4] || '').trim();
     if (text) lines.push({ time: t, text });
   }
-  // Merge duplicate timestamps, keep order
   lines.sort((a, b) => a.time - b.time);
   const out = [];
   for (const line of lines) {
-    if (out.length && Math.abs(out[out.length - 1].time - line.time) < 0.05) {
+    if (out.length && Math.abs(out[out.length - 1].time - line.time) < 0.04) {
       out[out.length - 1].text += ' ' + line.text;
-    } else {
-      out.push(line);
-    }
+    } else out.push(line);
   }
   return out;
 }
-
-let lyricsOffset = 0;
-let lastActiveLyric = -1;
-let rafId = null;
 
 function startProgress() {
   stopProgress();
   const tick = () => {
     if (!player || typeof player.getCurrentTime !== 'function') {
-      rafId = requestAnimationFrame(tick);
+      if (isPlaying) rafId = requestAnimationFrame(tick);
       return;
     }
     try {
@@ -337,13 +342,17 @@ function startProgress() {
         $('#progressBar').value = Math.floor((cur / dur) * 1000);
         $('#currentTime').textContent = fmt(cur);
         $('#duration').textContent = fmt(dur);
+        if ('mediaSession' in navigator && navigator.mediaSession.setPositionState) {
+          try {
+            navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(cur, dur), playbackRate: 1 });
+          } catch {}
+        }
       }
       syncLyrics(cur);
     } catch {}
     if (isPlaying) rafId = requestAnimationFrame(tick);
   };
   rafId = requestAnimationFrame(tick);
-  // Also keep a light interval as backup when tab is throttled
   progressTimer = setInterval(() => {
     if (!isPlaying || !player) return;
     try {
@@ -356,7 +365,7 @@ function startProgress() {
       }
       syncLyrics(cur);
     } catch {}
-  }, 120);
+  }, 100);
 }
 
 function stopProgress() {
@@ -367,38 +376,25 @@ function stopProgress() {
 function syncLyrics(t) {
   if (!syncedLyrics.length) return;
   const time = t + lyricsOffset;
-
-  // Binary search for the active line: last line where time >= line.time
   let lo = 0, hi = syncedLyrics.length - 1, active = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (syncedLyrics[mid].time <= time) {
-      active = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
+    if (syncedLyrics[mid].time <= time) { active = mid; lo = mid + 1; }
+    else hi = mid - 1;
   }
-
-  // If next line is very close (< 0.12s), prefer switching early for vocal feel
+  // Switch slightly early toward next line for vocal onset
   if (active >= 0 && active < syncedLyrics.length - 1) {
-    const nextT = syncedLyrics[active + 1].time;
-    if (nextT - time < 0.12 && nextT - time > 0) {
-      active = active + 1;
-    }
+    const gap = syncedLyrics[active + 1].time - time;
+    if (gap > 0 && gap < 0.1) active = active + 1;
   }
-
   if (active === lastActiveLyric) return;
   lastActiveLyric = active;
 
   const lines = $('#lyricsContainer').querySelectorAll('.lyrics-line');
   lines.forEach((el, i) => {
-    if (i === active) {
-      el.classList.add('active');
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else {
-      el.classList.remove('active');
-    }
+    el.classList.toggle('active', i === active);
+    el.classList.toggle('passed', i < active);
+    if (i === active) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 }
 
@@ -445,14 +441,12 @@ $('#repeatBtn').addEventListener('click', () => {
   else { repeat = false; $('#repeatBtn').classList.remove('active'); }
 });
 
-// Modal
 $('#miniPlayer').addEventListener('click', e => {
   if (e.target.closest('#miniPlayBtn')) return;
   openModal();
 });
 $('#modalBackdrop').addEventListener('click', closeModal);
 $('.modal-handle').addEventListener('click', closeModal);
-
 function openModal() { $('#playerModal').classList.add('open'); isModalOpen = true; }
 function closeModal() { $('#playerModal').classList.remove('open'); isModalOpen = false; }
 
@@ -465,4 +459,15 @@ $('.modal-sheet').addEventListener('touchend', e => {
 $('#lyricsBtn').addEventListener('click', () => { closeModal(); switchView('lyrics'); });
 $('#queueBtn').addEventListener('click', () => { closeModal(); switchView('queue'); });
 
+// Keep playing when page is hidden (background tab)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && isPlaying && player) {
+    try { player.playVideo(); } catch {}
+  }
+});
+
 loadHome('trending music');
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
